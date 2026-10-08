@@ -1,0 +1,188 @@
+{
+    "game": {
+        "screen_width": 800,
+        "screen_height": 600,
+        "fps": 60,
+        "player_speed": 300,
+        "rotation_speed": 180,
+        "rotate_camera": true,
+        "camera_follow_lerp": 0.18,
+        "mouse_turn_speed": 180,
+        "mouse_turn_deadzone": 0.2,
+        "aiming_speed_multiplier": 0.5,
+        "bullet_speed": 800,
+        "bullet_cooldown": 0.15,
+        "reload_time": 2.0,
+        "magazine_size": 30,
+        "player_radius": 20,
+        "bullet_radius": 5,
+        "bullet_damage": 20,
+        "respawn_time": 3.0,
+        "respawn_protection": 2.0
+    },
+    "map": {
+        "type": "grid3x3",
+        "room_size": 600,
+        "wall_thickness": 20,
+        "door_size": 80,
+        "door_animation_speed": 2.0,
+        "door_open_angle": 150,
+        "door_push_accel": 8.0,
+        "door_damping": 2.0,
+        "door_max_speed": 6.0,
+        "door_grab_distance": 110,
+        "door_self_close_angle": 25.0,
+        "door_self_close_speed": 12.0,
+        "door_self_close_velocity": 0.25,
+        "door_tap_time": 0.3,
+        "door_slam_velocity": 1.5
+    },
+    "hit_effects": {
+        "slowdown_duration": 0.5,
+        "slowdown_factor": 0.5
+    },
+    "melee": {
+        "damage": 40,
+        "range": 60,
+        "cooldown": 0.8,
+        "animation_time": 0.3,
+        "angle": 90,
+        "heavy_damage": 60,
+        "heavy_range": 45,
+        "heavy_cooldown": 1.2,
+        "heavy_animation_time": 0.45,
+        "heavy_angle": 60
+    },
+    "aiming": {
+        "camera_range": 400,
+        "sensitivity": 1,
+        "offset_lerp": 0.25,
+        "turn_speed": 540
+    },
+    "network": {
+        "server_port": 5555,
+        "max_players": 10,
+        "buffer_size": 65536,
+        "heartbeat_interval": 1.0,
+        "client_timeout": 5.0,
+        "connection_timeout": 10.0,
+        "scan_timeout": 1.0
+    },
+    "vision": {
+        "field_of_view": 120,
+        "vision_range": 300,
+        "aimed_field_of_view": 30
+    },
+    "chat": {
+        "max_messages": 10,
+        "display_time": 10.0,
+        "max_length": 50
+    },
+    "ai": {
+        "use_enhanced_ai": true,
+        "cost_update_interval": 0.25
+    },
+    "items": {
+        "enabled": true,
+        "spawn_count": 12,
+        "respawn_enabled": true,
+        "pickup_range": 35,
+        "types": {
+            "health_pack": {
+                "enabled": true,
+                "weight": 0.35,
+                "heal_amount": 50,
+                "respawn_time": 30
+            },
+            "ammo_box": {
+                "enabled": true,
+                "weight": 0.25,
+                "ammo_amount": 30,
+                "respawn_time": 25
+            },
+            "armor": {
+                "enabled": true,
+                "weight": 0.15,
+                "armor_amount": 50,
+                "damage_reduction": 0.5,
+                "respawn_time": 35
+            },
+            "speed_boost": {
+                "enabled": true,
+                "weight": 0.10,
+                "duration": 10,
+                "speed_multiplier": 1.5,
+                "respawn_time": 20
+            },
+            "damage_boost": {
+                "enabled": true,
+                "weight": 0.10,
+                "duration": 15,
+                "damage_multiplier": 1.5,
+                "respawn_time": 25
+            },
+            "grenade": {
+                "enabled": true,
+                "weight": 0.15,
+                "damage": 80,
+                "explosion_radius": 140,
+                "respawn_time": 40,
+                "throw_speed": 400,
+                "fuse_time": 3.0,
+                "friction": 1.2,
+                "bounce_damping": 0.6
+            }
+        }
+    },
+    "commands": {
+        "prefix": ".",
+        "enabled": true
+    },
+    "colors": {
+        "white": [255, 255, 255],
+        "red": [255, 0, 0],
+        "green": [0, 255, 0],
+        "blue": [0, 0, 255],
+        "black": [0, 0, 0],
+        "gray": [100, 100, 100],
+        "dark_gray": [50, 50, 50],
+        "light_gray": [140, 140, 140],
+        "vision_ground": [80, 80, 80],
+        "yellow": [255, 255, 0],
+        "door": [139, 69, 19],
+        "dark_door": [69, 34, 9],
+        "dead": [128, 128, 128],
+        "vision": [255, 255, 0, 30],
+        "fog": [20, 20, 20, 180],
+        "light_gray_transparent": [200, 200, 200, 80],
+        "light_blue": [173, 216, 230],
+        "dark_blue": [0, 100, 200],
+        "orange": [255, 165, 0],
+        "purple": [128, 0, 128],
+        "melee": [255, 100, 100],
+        "melee_range": [255, 0, 0, 80],
+        "aim": [0, 255, 255]
+    },
+    "controls": {
+        "scheme": "twinstick",
+        "bindings": {
+            "move_up": "w",
+            "move_down": "s",
+            "move_left": "a",
+            "move_right": "d",
+            "shoot": "up",
+            "aim": "space",
+            "reload": "r",
+            "grenade": "g",
+            "chat": "y",
+            "switch_weapon": "3",
+            "interact": "e"
+        }
+    },
+    "audio": {
+        "volume": 80
+    },
+    "tutorial": {
+        "seen": false
+    }
+}

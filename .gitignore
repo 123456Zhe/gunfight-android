@@ -1,0 +1,25 @@
+# Build outputs
+build/
+build-apk/
+*.apk
+*.aab
+
+# Local SDK / signing
+local.properties
+*.keystore
+*.jks
+
+# Logs
+*.log
+
+# Reference copies & caches
+reference/
+__pycache__/
+
+# IDE
+.idea/
+*.iml
+.gradle/
+
+# OS
+.DS_Store

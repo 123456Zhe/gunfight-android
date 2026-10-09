@@ -10,7 +10,7 @@ import android.view.View
 import com.gunfight.protocol.*
 import kotlin.math.*
 
-/** Phase 2 playable view: twin-stick controls, HUD, camera follows local player. */
+/** Playable view: twin-stick controls, HUD, FOV-culled world, camera follows the local player. */
 class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
 
     @Volatile var client: GameClient? = null
@@ -20,6 +20,10 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 4f
+    }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 30f
+        color = Color.WHITE
     }
     private val path = Path()
 
@@ -36,11 +40,18 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
     private var lastFireMs = 0L
     private var lastSentMs = 0L
     private var lastDoorSyncMs = 0L
+    private var lastPickupScanMs = 0L
+    private var pendingPickupId = -1
+    private var pendingPickupMs = 0L
+    private var pickupBackoffMs = 0L
+    private var lastHitSeenMs = 0L
+    private var lastPruneMs = 0L
 
     // ---- joysticks ----
     private val leftStick = Stick()
     private val rightStick = Stick()
     private val stickRadius = 130f
+    private val deadZone = 14f
     private var grenadeBtnX = 0f
     private var grenadeBtnY = 0f
     private val grenadeBtnR = 70f
@@ -48,10 +59,23 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
     private var lastFrameNs = System.nanoTime()
     private var fps = 0.0
 
+    /** Smoothed positions for remote players (server only sends 20Hz). */
+    private class Smooth(var x: Double, var y: Double, var angle: Double)
+
+    private val remote = HashMap<Int, Smooth>()
+
+    /** Bullet id -> receive time, for 20Hz extrapolation. */
+    private val bulletSeen = HashMap<Int, Long>()
+
+    private class HitMark(val x: Double, val y: Double, val damage: Double, val recvMs: Long)
+
+    private val hitMarks = ArrayList<HitMark>()
+
     private val palette = intArrayOf(
         Color.RED, Color.BLUE, Color.GREEN, Color.YELLOW,
         Color.rgb(255, 165, 0), Color.rgb(128, 0, 128), Color.CYAN
     )
+
     private fun playerColor(id: Int): Int =
         if (id == 0) Color.WHITE else palette[Math.floorMod(id, 7)]
 
@@ -72,7 +96,6 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 val i = e.actionIndex
                 val id = e.getPointerId(i)
                 val x = e.getX(i); val y = e.getY(i)
-                // grenade button first
                 if (hypot(x - grenadeBtnX, y - grenadeBtnY) <= grenadeBtnR * 1.3f) {
                     throwGrenade()
                     return true
@@ -103,7 +126,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         val me = c.snapshot.players[myId] ?: return
         if (me.isDead || me.grenades <= 0) return
         val rad = Math.toRadians(myAngle)
-        val dx = cos(rad); val dy = -sin(rad) // game angle -> y-down world
+        val dx = cos(rad); val dy = -sin(rad)
         c.sendGrenade(myX + dx * 30, myY + dy * 30, dx, dy)
     }
 
@@ -121,10 +144,17 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
             postInvalidateOnAnimation()
             return
         }
-        if (myId < 0) myId = c.handshake.clientId
+        if (myId < 0) {
+            myId = c.handshake.clientId
+            c.snapshot.localPlayerId = myId
+        }
         val snap = c.snapshot
 
-        // sync door states from server
+        if (nowMs - lastPruneMs >= 500) {
+            lastPruneMs = nowMs
+            snap.pruneStalePlayers(nowMs)
+        }
+
         for ((idStr, state) in snap.doors) {
             val id = idStr.toIntOrNull() ?: continue
             val progress = (state["animation_progress"] as? Number)?.toDouble() ?: 0.0
@@ -140,62 +170,64 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
             wasDead = me.isDead
         }
 
-        if (initialized && me != null && !me.isDead) {
+        if (initialized && me != null && !me.isDead && c.connected) {
             updateLocal(dt, nowMs, c, me)
         }
 
-        render(canvas, snap, me)
+        render(canvas, snap, me, dt, nowMs)
         postInvalidateOnAnimation()
     }
 
     private fun updateLocal(dt: Double, nowMs: Long, c: GameClient, me: PlayerState) {
-        // --- movement (left stick) ---
+        // --- movement (left stick, linear response outside the dead zone) ---
         val (mdx, mdy) = leftStick.vec(stickRadius)
         val mLen = hypot(mdx, mdy)
         var wantX = 0.0
         var wantY = 0.0
-        if (mLen > 10) {
-            val speed = GameMap.PLAYER_SPEED * min(1.0, (mLen / stickRadius).toDouble())
-            wantX = (mdx / stickRadius) * speed * dt
-            wantY = (mdy / stickRadius) * speed * dt
+        if (mLen > deadZone) {
+            val mag = min(1.0, ((mLen - deadZone) / (stickRadius - deadZone)).toDouble())
+            val speed = settings.playerSpeed * mag
+            wantX = (mdx / mLen) * speed * dt
+            wantY = (mdy / mLen) * speed * dt
         }
 
         // --- aim (right stick) ---
         val (adx, ady) = rightStick.vec(stickRadius)
         val aLen = hypot(adx, ady)
-        if (aLen > 10) {
+        if (aLen > deadZone) {
             myAngle = Math.toDegrees(atan2((-ady).toDouble(), adx.toDouble()))
         }
 
-        // --- reload ---
+        // --- reload: ammo is server-authoritative, this only gates local fire ---
         if (reloading && nowMs >= reloadEndMs) reloading = false
-        if (!reloading && me.ammo <= 0 && me.ammo < 30) {
+        if (!reloading && me.ammo <= 0) {
             reloading = true
-            reloadEndMs = nowMs + 2000
+            reloadEndMs = nowMs + settings.reloadMs
         }
 
-        // --- move with collision; auto-open doors we're pushing against ---
+        // --- move with collision; auto-open doors we are pushing against ---
         if (wantX != 0.0 || wantY != 0.0) {
-            val (nx, ny) = gameMap.moveWithCollision(
-                myX, myY, wantX, wantY, GameMap.PLAYER_RADIUS
-            )
-            // blocked? maybe a closed door: try to open it
+            val (nx, ny) = gameMap.moveWithCollision(myX, myY, wantX, wantY, settings.playerRadius)
             if (nx == myX && ny == myY) tryOpenDoor(c, nowMs)
             myX = nx; myY = ny
         }
 
         // --- fire ---
         shooting = false
-        if (aLen > stickRadius * 0.35 && !reloading && me.ammo > 0 && nowMs - lastFireMs >= 150) {
+        if (aLen > stickRadius * 0.35 && !reloading && me.ammo > 0 &&
+            nowMs - lastFireMs >= settings.fireIntervalMs
+        ) {
             val dx = (adx / aLen).toDouble()
             val dy = (ady / aLen).toDouble()
             val rad = Math.toRadians(myAngle)
-            // muzzle along aim
             val mdx2 = cos(rad); val mdy2 = -sin(rad)
             c.sendFire(myX + mdx2 * 28, myY + mdy2 * 28, dx, dy)
             lastFireMs = nowMs
             shooting = true
         }
+
+        // --- walk-over item pickup ---
+        tryPickup(c, nowMs)
 
         // --- report state 20Hz ---
         if (nowMs - lastSentMs >= 50) {
@@ -204,18 +236,51 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         }
     }
 
-    /** If we're pushing against a closed door, open it away from us. */
+    /** Walk-over pickup: nearest active item in range, retried until the server confirms. */
+    private fun tryPickup(c: GameClient, nowMs: Long) {
+        if (nowMs < pickupBackoffMs || nowMs - lastPickupScanMs < 120) return
+        lastPickupScanMs = nowMs
+        val snap = c.snapshot
+        if (pendingPickupId >= 0) {
+            val confirmed = snap.lastPickupItemId == pendingPickupId ||
+                snap.items[pendingPickupId]?.active == false
+            if (confirmed) {
+                pendingPickupId = -1
+            } else if (nowMs - pendingPickupMs > 1500) {
+                // server rejected (out of range): pause before trying the next item
+                pendingPickupId = -1
+                pickupBackoffMs = nowMs + 600
+            } else {
+                return
+            }
+        }
+        val reach = settings.pickupRange - 5
+        var best: ItemState? = null
+        var bestDist = reach * reach
+        for (it in snap.items.values) {
+            if (!it.active) continue
+            val dx = it.x - myX
+            val dy = it.y - myY
+            val d2 = dx * dx + dy * dy
+            if (d2 <= bestDist) {
+                bestDist = d2
+                best = it
+            }
+        }
+        val target = best ?: return
+        pendingPickupId = target.id
+        pendingPickupMs = nowMs
+        c.sendItemPickup(target.id)
+    }
+
+    /** If we are pushing against a closed door, open it away from us. */
     private fun tryOpenDoor(c: GameClient, nowMs: Long) {
         if (nowMs - lastDoorSyncMs < 500) return
-        // find a closed door whose panel blocks us
         for (d in gameMap.doors) {
             if (abs(d.progress) >= 0.9) continue
-            val cx = d.hingeX // approx: door center
-            // use original rect center
             val ox = d.original.x + d.original.w / 2
             val oy = d.original.y + d.original.h / 2
             if (hypot(myX - ox, myY - oy) > 120) continue
-            // open away from us: pick sign by free-end distance (mirror of Python open_away_from)
             val rad = Math.toRadians(GameMap.DOOR_OPEN_ANGLE)
             val cosA = cos(rad); val sinA = sin(rad)
             val epx = d.hingeX + (d.baseDirX * cosA - d.baseDirY * sinA) * d.panelLength
@@ -225,8 +290,10 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
             val distPlus = hypot(myX - epx, myY - epy)
             val distMinus = hypot(myX - emx, myY - emy)
             val target = if (distPlus < distMinus) -1.0 else 1.0
-            d.progress = target // snap open locally; server broadcast will confirm
-            c.sendDoorUpdate(d.id, target)
+            d.progress = target
+            val serverVersion =
+                (c.snapshot.doors[d.id.toString()]?.get("version") as? Number)?.toInt() ?: 0
+            c.sendDoorUpdate(d.id, target, serverVersion)
             lastDoorSyncMs = nowMs
             break
         }
@@ -234,7 +301,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
 
     // ================= render =================
 
-    private fun render(canvas: Canvas, snap: GameSnapshot, me: PlayerState?) {
+    private fun render(canvas: Canvas, snap: GameSnapshot, me: PlayerState?, dt: Double, nowMs: Long) {
         val w = width.toFloat()
         val h = height.toFloat()
         canvas.drawColor(settings.color("fog", Color.rgb(20, 20, 20)))
@@ -248,17 +315,26 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         canvas.translate(w / 2, h / 2)
         canvas.scale(scale, scale)
         canvas.translate(-cx, -cy)
-
         drawMap(canvas, mapSize)
-        drawDoors(canvas)
         drawItems(canvas, snap)
         drawGrenades(canvas, snap)
-        drawBullets(canvas, snap)
-        drawPlayers(canvas, snap)
+        drawBullets(canvas, snap, nowMs)
+        drawPlayers(canvas, snap, dt, nowMs)
+        drawExplosions(canvas, snap, nowMs)
+        drawHitMarks(canvas, snap, nowMs)
         canvas.restore()
 
-        drawHud(canvas, w, h, me, snap)
+        drawHud(canvas, w, h, me, snap, nowMs)
         drawSticks(canvas)
+    }
+
+    /** Visible = inside the local player's FOV with line of sight, same as the desktop client. */
+    private fun visible(x: Double, y: Double): Boolean {
+        if (!initialized) return true
+        return Vision.isVisible(
+            myX, myY, myAngle, x, y, settings.fovDeg,
+            gameMap.walls, gameMap.doors
+        )
     }
 
     private fun drawMap(canvas: Canvas, mapSize: Float) {
@@ -272,13 +348,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 (wall.x + wall.w).toFloat(), (wall.y + wall.h).toFloat(), paint
             )
         }
-        linePaint.color = Color.WHITE
-        canvas.drawRect(0f, 0f, mapSize, mapSize, linePaint)
-    }
-
-    private fun drawDoors(canvas: Canvas) {
-        paint.style = Paint.Style.FILL
-        paint.color = Color.rgb(160, 120, 60)
+        paint.color = settings.color("door", Color.rgb(160, 120, 60))
         for (d in gameMap.doors) {
             val corners = d.corners()
             path.reset()
@@ -287,44 +357,85 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
             path.close()
             canvas.drawPath(path, paint)
         }
+        linePaint.color = Color.WHITE
+        canvas.drawRect(0f, 0f, mapSize, mapSize, linePaint)
     }
 
-    private fun drawPlayers(canvas: Canvas, snap: GameSnapshot) {
+    private fun drawPlayers(canvas: Canvas, snap: GameSnapshot, dt: Double, nowMs: Long) {
         val r = settings.playerRadius.toFloat()
+        val alive = HashSet<Int>()
+        val lerp = min(1.0, dt * 14.0)
         for (p in snap.players.values.sortedBy { it.id }) {
             val isMe = p.id == myId
-            // 本地玩家画在本地模拟位置（服务端位置有延迟/可能被拒）
-            val x = if (isMe && initialized) myX.toFloat() else p.posX.toFloat()
-            val y = if (isMe && initialized) myY.toFloat() else p.posY.toFloat()
-            val ang = if (isMe && initialized) myAngle else p.angle
+            if (!isMe) {
+                alive.add(p.id)
+                val s = remote.getOrPut(p.id) { Smooth(p.posX, p.posY, p.angle) }
+                s.x += (p.posX - s.x) * lerp
+                s.y += (p.posY - s.y) * lerp
+                var d = Angles.normalize(p.angle - s.angle)
+                if (d > 180.0) d -= 360.0
+                s.angle = Angles.normalize(s.angle + d * lerp)
+                if (!visible(p.posX, p.posY)) continue
+            }
+            val s = remote[p.id]
+            val x = if (isMe && initialized) myX else if (isMe) p.posX else (s?.x ?: p.posX)
+            val y = if (isMe && initialized) myY else if (isMe) p.posY else (s?.y ?: p.posY)
+            val ang = if (isMe && initialized) myAngle else if (isMe) p.angle else (s?.angle ?: p.angle)
             val col = if (p.isDead) settings.color("dead", Color.GRAY)
             else if (isMe) Color.WHITE else playerColor(p.id)
             paint.style = Paint.Style.FILL
             paint.color = col
-            canvas.drawCircle(x, y, r, paint)
+            canvas.drawCircle(x.toFloat(), y.toFloat(), r, paint)
             if (isMe) {
                 linePaint.color = Color.YELLOW
                 linePaint.strokeWidth = 3f
-                canvas.drawCircle(x, y, r + 6, linePaint)
+                canvas.drawCircle(x.toFloat(), y.toFloat(), r + 6, linePaint)
                 linePaint.strokeWidth = 4f
             }
             val rad = Math.toRadians(ang)
             val dx = cos(rad); val dy = -sin(rad)
             linePaint.color = Color.WHITE
-            canvas.drawLine(x, y, (x + dx * (r + 14)).toFloat(), (y + dy * (r + 14)).toFloat(), linePaint)
-            val hpFrac = (p.health.coerceIn(0, 100)) / 100f
-            paint.color = if (hpFrac > 0.5) Color.GREEN else Color.RED
-            canvas.drawRect(x - r, y - r - 18, x - r + 2 * r * hpFrac, y - r - 10, paint)
-            paint.color = Color.WHITE
-            canvas.drawText(p.name, x - r, y - r - 24, paint)
+            canvas.drawLine(
+                x.toFloat(), y.toFloat(),
+                (x + dx * (r + 14)).toFloat(), (y + dy * (r + 14)).toFloat(), linePaint
+            )
+            if (p.isDead) {
+                if (p.respawnTime > 0) {
+                    val left = p.respawnTime - nowMs / 1000.0
+                    if (left > 0) {
+                        textPaint.color = Color.LTGRAY
+                        canvas.drawText("%.1f".format(left), (x - 14).toFloat(), (y + 10).toFloat(), textPaint)
+                        textPaint.color = Color.WHITE
+                    }
+                }
+            } else {
+                val hpFrac = (p.health.coerceIn(0, 100)) / 100f
+                paint.color = if (hpFrac > 0.5) Color.GREEN else Color.RED
+                canvas.drawRect(
+                    (x - r).toFloat(), (y - r - 18).toFloat(),
+                    (x - r + 2 * r * hpFrac).toFloat(), (y - r - 10).toFloat(), paint
+                )
+                textPaint.color = Color.WHITE
+                canvas.drawText(p.name, (x - r).toFloat(), (y - r - 24).toFloat(), textPaint)
+            }
         }
+        remote.keys.retainAll(alive)
     }
 
-    private fun drawBullets(canvas: Canvas, snap: GameSnapshot) {
+    private fun drawBullets(canvas: Canvas, snap: GameSnapshot, nowMs: Long) {
         val r = settings.bulletRadius.toFloat()
         paint.style = Paint.Style.FILL
         paint.color = Color.WHITE
-        for (b in snap.bullets) canvas.drawCircle(b.x.toFloat(), b.y.toFloat(), r, paint)
+        val keep = HashSet<Int>()
+        for (b in snap.bullets) {
+            keep.add(b.id)
+            val seen = bulletSeen.getOrPut(b.id) { if (b.recvMs > 0) b.recvMs else nowMs }
+            val age = ((nowMs - seen) / 1000.0).coerceIn(0.0, 0.15)
+            val x = b.x + b.dx * Game.BULLET_SPEED * age
+            val y = b.y + b.dy * Game.BULLET_SPEED * age
+            canvas.drawCircle(x.toFloat(), y.toFloat(), r, paint)
+        }
+        bulletSeen.keys.retainAll(keep)
     }
 
     private fun drawGrenades(canvas: Canvas, snap: GameSnapshot) {
@@ -339,63 +450,108 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         paint.style = Paint.Style.FILL
         for (it in snap.items.values) {
             if (!it.active) continue
+            if (!visible(it.x, it.y)) continue
             paint.color = itemColor(it.type)
-            canvas.drawRect(it.x.toFloat() - 10, it.y.toFloat() - 10, it.x.toFloat() + 10, it.y.toFloat() + 10, paint)
+            canvas.drawRect(
+                (it.x - 10).toFloat(), (it.y - 10).toFloat(),
+                (it.x + 10).toFloat(), (it.y + 10).toFloat(), paint
+            )
         }
     }
 
-    private fun drawHud(canvas: Canvas, w: Float, h: Float, me: PlayerState?, snap: GameSnapshot) {
+    private fun drawExplosions(canvas: Canvas, snap: GameSnapshot, nowMs: Long) {
+        linePaint.strokeWidth = 4f
+        for (e in snap.explosions) {
+            val age = (nowMs - e.recvMs) / 1000.0
+            if (age > 0.5) continue
+            val t = (age / 0.5).toFloat()
+            linePaint.color = Color.argb((220 * (1 - t)).toInt(), 255, 165, 0)
+            canvas.drawCircle(e.x.toFloat(), e.y.toFloat(), 12f + 110f * t, linePaint)
+        }
+    }
+
+    private fun drawHitMarks(canvas: Canvas, snap: GameSnapshot, nowMs: Long) {
+        val hit = snap.lastHit
+        if (hit != null && hit.recvMs != lastHitSeenMs) {
+            lastHitSeenMs = hit.recvMs
+            if (hit.targetPosX != null && hit.targetPosY != null) {
+                hitMarks.add(HitMark(hit.targetPosX, hit.targetPosY, hit.damage, hit.recvMs))
+                while (hitMarks.size > 8) hitMarks.removeAt(0)
+            }
+        }
+        hitMarks.removeAll { nowMs - it.recvMs > 800 }
+        if (hitMarks.isEmpty()) return
+        textPaint.textSize = 34f
+        textPaint.color = Color.rgb(255, 220, 0)
+        for (m in hitMarks) {
+            val t = ((nowMs - m.recvMs) / 800.0).toFloat()
+            val y = m.y - 30 - 40 * t
+            canvas.drawText("-" + m.damage.toInt(), (m.x - 16).toFloat(), y.toFloat(), textPaint)
+        }
+        textPaint.textSize = 30f
+        textPaint.color = Color.WHITE
+    }
+
+    private fun drawHud(canvas: Canvas, w: Float, h: Float, me: PlayerState?, snap: GameSnapshot, nowMs: Long) {
         paint.style = Paint.Style.FILL
-        // HP bar
         val hpFrac = ((me?.health ?: 100).coerceIn(0, 100)) / 100f
         paint.color = Color.rgb(60, 60, 60)
         canvas.drawRect(16f, 16f, 316f, 44f, paint)
         paint.color = if (hpFrac > 0.5) Color.GREEN else if (hpFrac > 0.25) Color.rgb(255, 165, 0) else Color.RED
         canvas.drawRect(16f, 16f, 16f + 300f * hpFrac, 44f, paint)
-        paint.color = Color.WHITE
-        canvas.drawText("${me?.health ?: 100}", 330f, 42f, paint)
-        // armor bar
+        textPaint.color = Color.WHITE
+        canvas.drawText("" + (me?.health ?: 100), 330f, 42f, textPaint)
         val armor = me?.armor ?: 0
         paint.color = Color.rgb(60, 60, 60)
         canvas.drawRect(16f, 52f, 316f, 72f, paint)
         paint.color = Color.rgb(80, 160, 255)
         canvas.drawRect(16f, 52f, 16f + 300f * (armor.coerceIn(0, 100) / 100f), 72f, paint)
-        // ammo
-        paint.textSize = 64f
-        paint.color = if ((me?.ammo ?: 1) > 0) Color.WHITE else Color.RED
-        canvas.drawText("${me?.ammo ?: 0}", 16f, 140f, paint)
-        paint.textSize = 30f
-        paint.color = Color.WHITE
-        canvas.drawText("/ 30", 110f, 140f, paint)
-        // grenades
-        canvas.drawText("雷 x${me?.grenades ?: 0}", 16f, 180f, paint)
-        // dead banner
+
+        textPaint.textSize = 64f
+        textPaint.color = if ((me?.ammo ?: 1) > 0) Color.WHITE else Color.RED
+        canvas.drawText("" + (me?.ammo ?: 0), 16f, 140f, textPaint)
+        textPaint.textSize = 30f
+        textPaint.color = Color.WHITE
+        canvas.drawText("/ " + settings.magazineSize, 110f, 140f, textPaint)
+        canvas.drawText("雷 x" + (me?.grenades ?: 0), 16f, 180f, textPaint)
+
         if (me?.isDead == true) {
-            paint.textSize = 56f
-            paint.color = Color.RED
-            val msg = "阵亡，等待复活…"
-            canvas.drawText(msg, w / 2 - 180f, h / 2, paint)
-            paint.textSize = 30f
+            textPaint.textSize = 56f
+            textPaint.color = Color.RED
+            val left = if (me.respawnTime > 0) me.respawnTime - nowMs / 1000.0 else 0.0
+            val msg = if (left > 0) "阵亡 %.1f 秒后复活".format(left) else "阵亡，等待复活"
+            canvas.drawText(msg, w / 2 - 240f, h / 2, textPaint)
+            textPaint.textSize = 30f
+            textPaint.color = Color.WHITE
         }
-        // kill feed
-        paint.color = Color.WHITE
-        val kills = snap.kills.takeLast(3)
-        kills.forEachIndexed { i, k ->
-            canvas.drawText("${k.attackerName} ⚔ ${k.targetName}", 16f, 220f + i * 36f, paint)
+
+        snap.kills.takeLast(3).forEachIndexed { i, k ->
+            canvas.drawText(k.attackerName + " 击杀了 " + k.targetName, 16f, 220f + i * 36f, textPaint)
         }
-        // fps + counters (debug, top-right)
+
+        var chatY = h - 20f
+        for (line in snap.chat.takeLast(4).reversed()) {
+            val age = nowMs - line.recvMs
+            textPaint.color = Color.argb(if (age < 8000) 230 else 90, 220, 220, 220)
+            val prefix = if (line.playerId == 0) "" else line.name + ": "
+            canvas.drawText(prefix + line.text, 16f, chatY, textPaint)
+            chatY -= 34f
+        }
+        textPaint.color = Color.WHITE
+
         val conn = if (client?.connected == true) "●" else "○"
-        paint.color = Color.WHITE
-        canvas.drawText("$conn ${fps.toInt()}fps", w - 180f, 42f, paint)
-        // grenade button
+        canvas.drawText(conn + " " + fps.toInt() + "fps", w - 190f, 42f, textPaint)
+
         grenadeBtnX = w - 110f
         grenadeBtnY = 150f
-        paint.color = Color.argb(120, 255, 165, 0)
+        val haveGrenade = (me?.grenades ?: 0) > 0
+        paint.color = Color.argb(if (haveGrenade) 120 else 50, 255, 165, 0)
         canvas.drawCircle(grenadeBtnX, grenadeBtnY, grenadeBtnR, paint)
-        paint.color = Color.WHITE
-        paint.textSize = 44f
-        canvas.drawText("雷", grenadeBtnX - 22f, grenadeBtnY + 16f, paint)
-        paint.textSize = 30f
+        textPaint.textSize = 44f
+        textPaint.color = if (haveGrenade) Color.WHITE else Color.GRAY
+        canvas.drawText("雷", grenadeBtnX - 22f, grenadeBtnY + 16f, textPaint)
+        textPaint.textSize = 30f
+        textPaint.color = Color.WHITE
     }
 
     private fun drawSticks(canvas: Canvas) {

@@ -19,6 +19,7 @@ class GameClient(
     open class Listener {
         open fun onPacket(packet: Packet) {}
         open fun onTimeout() {}
+        open fun onKicked(reason: String) {}
     }
 
     val serverAddress = InetSocketAddress(serverHost, serverPort)
@@ -66,6 +67,7 @@ class GameClient(
             when (handshake.state) {
                 Handshake.State.CONNECTED -> {
                     connected = true
+                    snapshot.localPlayerId = handshake.clientId
                     lastResponseMs = System.currentTimeMillis()
                     startHeartbeat()
                     return true
@@ -103,6 +105,13 @@ class GameClient(
                         // the server's init burst arrives microseconds after
                         // connect_response, always beating the 50ms connect() poll.
                         if (packet.type != "heartbeat_response") snapshot.apply(packet)
+                    }
+                    if (packet is Packet.Message && packet.type == "kick") {
+                        val reason = (packet.data as? Map<*, *>)?.get("reason") as? String
+                        connected = false
+                        listener.onKicked(reason ?: "被服务器踢出")
+                        close()
+                        break
                     }
                     if (packet is Packet.ServerInfo) handshake.onServerInfo(packet)
                     listener.onPacket(packet)
@@ -166,11 +175,24 @@ class GameClient(
         }
     }
 
-    private var doorVersion = 0
+    private val doorVersions = java.util.concurrent.ConcurrentHashMap<Int, Int>()
 
-    fun sendDoorUpdate(doorId: Int, progress: Double) {
+    /** map.py applies a door state only when version strictly increases, so seed from the
+     * last broadcast version: a stale local counter would be shadowed by other clients. */
+    fun sendDoorUpdate(doorId: Int, progress: Double, serverVersion: Int = 0) {
+        val next = maxOf(serverVersion, doorVersions[doorId] ?: 0) + 1
+        doorVersions[doorId] = next
         try {
-            sendRaw(buildDoorUpdate(doorId, progress, ++doorVersion))
+            sendRaw(buildDoorUpdate(doorId, progress, next))
+        } catch (_: Exception) {
+        }
+    }
+
+    fun sendItemPickup(itemId: Int) {
+        val pid = handshake.clientId
+        if (pid < 0) return
+        try {
+            sendRaw(buildItemPickup(pid, itemId))
         } catch (_: Exception) {
         }
     }

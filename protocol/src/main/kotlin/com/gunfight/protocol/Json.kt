@@ -13,9 +13,11 @@ object Json {
             is Boolean -> append(if (v) "true" else "false")
             is Number -> {
                 val d = v.toDouble()
-                if (d.isNaN() || d.isInfinite()) append("null")
-                else if (v is Int || v is Long || d == kotlin.math.floor(d) && !d.isInfinite()) append(v.toLong().toString())
-                else append(d.toString())
+                when {
+                    d.isNaN() || d.isInfinite() -> append("null")
+                    v is Int || v is Long -> append(v.toString())
+                    else -> append(d.toString())
+                }
             }
             is Map<*, *> -> {
                 append('{')

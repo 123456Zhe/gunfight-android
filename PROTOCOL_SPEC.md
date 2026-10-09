@@ -1,7 +1,7 @@
 # zd-2d-gunfight 安卓原生客户端 · 网络协议规格
 
 > 依据 `123456Zhe/zd-2d-gunfight` 仓库 `network.py`（3074 行，含 2026-10-07 安全加固）逐行整理。
-> 适用服务端版本：commit `239cf29`（2026-10-07）及之后。
+> 适用服务端版本：commit `239cf29`（2026-10-07）及之后，含 `aaa7d4b` 的大包拆分。
 > 设计原则：**服务端权威**——伤害、弹药、复活位置、拾取效果全部由服务端结算，客户端是"渲染器 + 输入采集器"，不做任何权威判定。
 > 画面目标为几何级一致（位置/尺寸/颜色/布局相同），不要求像素级一致。
 
@@ -14,7 +14,7 @@
 | 协议 | UDP / IPv4（`AF_INET, SOCK_DGRAM`），无 TCP、无 TLS |
 | 默认端口 | `5555`（`settings.json → network.server_port`） |
 | 消息编码 | JSON 文本，UTF-8。`json.dumps(data).encode()`；注意 Python 默认 `ensure_ascii=True`，中文会被转义为 `\uXXXX`，解析器必须能处理 |
-| 包边界 | 每个 UDP 数据报 = 一条完整 JSON 消息，无分片/组包机制 |
+| 包边界 | 每个 UDP 数据报 = 一条完整 JSON 消息；服务端的 `init_players` / `player_update` 会在应用层按 1200B 拆成多条（`chunk_dict_payload`，commit aaa7d4b 起），客户端必须逐条 upsert |
 | 大小端 | 不适用（文本协议） |
 | 接收上限 | `BUFFER_SIZE = 65536`（`network.buffer_size`）。超限包被 `recvfrom` **静默截断**，无报错（已知坑） |
 | socket 超时 | 服务端/客户端 `settimeout(1.0)` |
@@ -83,7 +83,7 @@
 
 ### 3.1 player_update（位置/状态上报）
 
-- **方向**：C→S（客户端每帧发送，约 60Hz）；S→C 为 20Hz 广播（见 4.2）
+- **方向**：C→S（客户端约 20Hz 上报，单包必须 < 1200B）；S→C 为 20Hz 广播（见 4.2）
 - **格式**：`{"type":"player_update","data":{"<pid字符串>":{...}}}`（只发自己这一项）
 - **字段**（player.py `Player.update` 构造）：
 
@@ -342,7 +342,9 @@
 - **移动**：本地立即响应输入（WASD/虚拟摇杆），每帧发 `player_update`；收到服务端 20Hz 广播后做位置校正（建议插值平滑，不要瞬移）。
 - **开火**：本地可立即播枪口特效+音效，但**弹道以服务端 `bullets_update` 为准**（服务端有射速/弹药校验，非法开火会被静默拒绝）。
 - **子弹渲染**：`bullets_update` 20Hz，中间帧可按 `dir * BULLET_SPEED` 外推。
-- **门**：本地推门有物理反馈，`door_update` 到达后以 `version` 大者为准（`state_version` 单调递增）。
+- **门**：本地推门有物理反馈，`door_update` 到达后以 `version` 大者为准（`state_version` 单调递增）。推送时的 version 要从**服务端广播里的当前 version** 往上加（服务端只接受严格更大的值），不要用自己的全局计数。
+- **拾取**：走到道具附近时必须主动发 `item_pickup`，服务端校验 `ITEMS_PICKUP_RANGE` 距离后才生效并广播；只发一次（丢包/越界被拒）就意味着道具进不了背包，建议 150ms 左右重试，收到 `item_pickup` 广播或 `is_active=false` 后停止。
+- **视野**：服务端把所有人的位置发给所有人，客户端必须自己按 FOV + 视线裁剪（Python 端 `utils.is_visible` + `map.Door.line_intersects`），否则等于全图透视。
 
 ### 7.3 重传与可靠性
 - `request_bullet` / `request_grenade` 带 `seq`，客户端 0.1s/0.12s 后重发，最多 2 次；服务端按序号去重，**不会**产生重复子弹。
@@ -354,7 +356,7 @@
 - NAT 环境下 UDP 源端口变化会被服务端视为**未知地址**，消息被丢弃——等同于掉线，需重连。
 
 ### 7.5 已知坑
-1. `BUFFER_SIZE` 截断**无报错**：包超过 65536 字节会被静默截断导致 JSON 解析失败（玩家多、道具多时 `player_update` 全量广播可能变大，注意监控包大小）。
+1. `BUFFER_SIZE` 截断**无报错**：包超过 65536 字节会被静默截断。服务端已按 1200B 在应用层拆 `init_players`/`player_update`，因此接收侧必须逐条 upsert，且**不能**因为某个 pid 不在当前包里就删掉该玩家（掉线要按"多久没出现"判定）。
 2. JSON 对象 key 的 int 会变 string：`player_update` 的 pid key、`doors` 字典 key，解析时要 `int()` 转换。
 3. Python `json.dumps` 默认转义非 ASCII：`ensure_ascii=True`，中文聊天是 `\uXXXX` 形式，Kotlin 的 `JSONObject`/`kotlinx.serialization` 正常解析即可。
 4. 客户端**只收**服务器地址的包：安卓端 `recvfrom` 后必须校验来源 `(ip, 5555)`。

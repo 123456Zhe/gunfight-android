@@ -7,6 +7,7 @@ class Handshake(
 ) {
     enum class State { IDLE, PROBE_SENT, CONNECT_SENT, CONNECTED, ROOM_FULL, FAILED }
 
+    @Volatile
     var state: State = State.IDLE
         private set
     var clientId: Int = -1

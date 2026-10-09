@@ -11,8 +11,8 @@ android {
         applicationId = "com.gunfight.client"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1-phase1"
+        versionCode = 2
+        versionName = "0.2-phase2"
     }
 
     buildTypes {

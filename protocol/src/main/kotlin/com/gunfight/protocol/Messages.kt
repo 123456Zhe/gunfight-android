@@ -53,6 +53,13 @@ fun buildGrenadeRequest(pid: Int, x: Double, y: Double, dx: Double, dy: Double, 
         "data" to mapOf("pos" to listOf(x, y), "dir" to listOf(dx, dy), "owner" to pid, "seq" to seq)
     ))
 
+/** C->S item pickup request. Server validates distance and computes the effect. */
+fun buildItemPickup(pid: Int, itemId: Int): String =
+    Json.stringify(mapOf(
+        "type" to "item_pickup",
+        "data" to mapOf("player_id" to pid, "item_id" to itemId)
+    ))
+
 /** C->S door state sync (door_id = game_map.doors index). */
 fun buildDoorUpdate(doorId: Int, progress: Double, version: Int): String =
     Json.stringify(mapOf(

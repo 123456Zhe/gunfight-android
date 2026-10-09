@@ -7,7 +7,12 @@
   - `protocol` 层 JVM 单测 31 项全过（含对着真实 Python `network.py` 的握手与拾取/推门互操作测试）；
   - `build.sh` 全链路跑通，产出 `dist/GunfightSpectate.apk`（~720KB，versionCode 2 / versionName 0.2-phase2）；
   - `./gradlew` 的 wrapper 已补上（jar + properties + gradlew），但本机无法下载 Gradle 8.7 发行版，
-    该路径未在本机实测；CI（`.github/workflows/ci.yml`）走 Gradle，首次跑要留意。
+    该路径未在本机实测，首次跑要留意。
+- 已推送到 GitHub `main`（提交 `f1c4f7b`）。本机推送要经本地代理：
+  `git config http.proxy http://127.0.0.1:7890`（只写在 .git/config，不入库）。
+- CI workflow（`.github/workflows/ci.yml`）写在本地但**尚未提交**：当前 gh token 缺 `workflow` scope，
+  GitHub 拒绝推送 workflow 文件。给它加上 `workflow` scope（或换一个有 scope 的凭据）后即可一起提交。
+- Gitea（68.64.177.154:3002）本次不可达（连接被拒绝），未做镜像推送。
 
 ## 已修复清单
 

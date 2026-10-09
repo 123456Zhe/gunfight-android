@@ -75,6 +75,26 @@ class FakeItem:
         }
 
 
+class FakePlayer:
+    """Stand-in for an AI player: the server applies melee damage through the game instance."""
+
+    def __init__(self, pid, x, y):
+        self.id = pid
+        self.pos = pg.Vector2(x, y)
+        self.health = 100
+        self.armor = 0
+        self.is_dead = False
+        self.respawn_time = 0
+        self.damage_boost_multiplier = 1.0
+
+    def take_damage(self, damage, respawn_time=0):
+        self.health = max(0, self.health - damage)
+        if self.health <= 0:
+            self.is_dead = True
+            self.respawn_time = time.time() + (respawn_time or 3)
+        return self.is_dead
+
+
 class FakeItemManager:
     def __init__(self):
         self.items = {}
@@ -127,7 +147,22 @@ try:
                     game.game_map.doors.append(FakeDoor(0, pos[0] + 40, pos[1], 80, 20))
                     game.game_map.doors.append(FakeDoor(1, pos[0] + 900, pos[1] + 900, 80, 20))
                     game.item_manager.items[1] = FakeItem(1, pos[0], pos[1])
-                    print("WORLD doors=2 items=1 at %.1f %.1f" % (pos[0], pos[1]), flush=True)
+                    with nm.lock:
+                        nm.players[3] = {
+                            "pos": [pos[0] + 30, pos[1]],
+                            "angle": 180.0,
+                            "health": 100,
+                            "ammo": 30,
+                            "armor": 0,
+                            "is_dead": False,
+                            "name": "Dummy",
+                            "weapon_type": "gun",
+                            "grenades": 0,
+                            "protection_end": 0,
+                            "respawn_time": 0,
+                        }
+                    game.ai_players[3] = FakePlayer(3, pos[0] + 30, pos[1])
+                    print("WORLD doors=2 items=1 dummy=3 at %.1f %.1f" % (pos[0], pos[1]), flush=True)
                     created = True
             try:
                 nm.update_and_broadcast()

@@ -40,6 +40,13 @@ class GameSettings private constructor(val root: Map<String, Any?>) {
     val fovDeg: Double get() = dbl("vision", "field_of_view", Vision.FOV_DEG)
     val aimedFovDeg: Double get() = dbl("vision", "aimed_field_of_view", Vision.AIMED_FOV_DEG)
     val serverPort: Int get() = int("network", "server_port", Net.DEFAULT_PORT)
+    val meleeRange: Double get() = dbl("melee", "range", 60.0)
+    val meleeAngle: Double get() = dbl("melee", "angle", 90.0)
+    val meleeCooldownMs: Long get() = (dbl("melee", "cooldown", 0.8) * 1000).toLong()
+    val heavyMeleeRange: Double get() = dbl("melee", "heavy_range", 45.0)
+    val heavyMeleeAngle: Double get() = dbl("melee", "heavy_angle", 60.0)
+    val heavyMeleeCooldownMs: Long get() = (dbl("melee", "heavy_cooldown", 1.2) * 1000).toLong()
+    val chatMaxLength: Int get() = int("chat", "max_length", 50)
 
     companion object {
         @Volatile private var cached: GameSettings? = null

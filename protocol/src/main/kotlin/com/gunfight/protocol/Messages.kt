@@ -24,7 +24,9 @@ fun buildHeartbeat(playerId: Int, timestampSec: Double): String =
 /** C->S player state report (~20Hz). Server is authoritative for health/ammo/etc. */
 fun buildPlayerUpdate(
     pid: Int, x: Double, y: Double, angleDeg: Double,
-    shooting: Boolean, isReloading: Boolean, name: String
+    shooting: Boolean, isReloading: Boolean, name: String,
+    meleeAttacking: Boolean = false, meleeDirection: Double = 0.0,
+    weaponType: String = "gun"
 ): String = Json.stringify(mapOf(
     "type" to "player_update",
     "data" to mapOf(pid.toString() to mapOf(
@@ -33,11 +35,37 @@ fun buildPlayerUpdate(
         "shooting" to shooting,
         "is_reloading" to isReloading,
         "name" to name,
-        "melee_attacking" to false,
-        "weapon_type" to "gun",
+        "melee_attacking" to meleeAttacking,
+        "melee_direction" to meleeDirection,
+        "weapon_type" to weaponType,
         "is_aiming" to false
     ))
 ))
+
+/** C->S melee swing. targets is only a candidate list: the server re-checks
+ *  cooldown, range, angle and line of sight for every id (network.py _handle_melee_attack). */
+fun buildMeleeAttack(pid: Int, directionDeg: Double, targets: List<Int>, isHeavy: Boolean): String =
+    Json.stringify(mapOf(
+        "type" to "melee_attack",
+        "data" to mapOf(
+            "attacker_id" to pid,
+            "direction" to directionDeg,
+            "targets" to targets,
+            "is_heavy" to isHeavy
+        )
+    ))
+
+/** C->S chat line; messages starting with '.' are in-game commands (server side). */
+fun buildChatMessage(pid: Int, name: String, message: String, isTeamChat: Boolean = false): String =
+    Json.stringify(mapOf(
+        "type" to "chat_message",
+        "data" to mapOf(
+            "player_id" to pid,
+            "player_name" to name,
+            "message" to message,
+            "is_team_chat" to isTeamChat
+        )
+    ))
 
 /** C->S fire request. seq dedups retransmits server-side. */
 fun buildFireRequest(pid: Int, x: Double, y: Double, dx: Double, dy: Double, seq: Int): String =

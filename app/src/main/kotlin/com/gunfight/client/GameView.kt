@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
 import com.gunfight.protocol.*
@@ -14,6 +15,9 @@ import kotlin.math.*
 class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
 
     @Volatile var client: GameClient? = null
+
+    /** Chat button was tapped: the activity shows its input row. */
+    var onChatToggle: (() -> Unit)? = null
 
     private val gameMap = GameMap()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 30f }
@@ -55,6 +59,16 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
     private var grenadeBtnX = 0f
     private var grenadeBtnY = 0f
     private val grenadeBtnR = 70f
+    private var meleeBtnX = 0f
+    private var meleeBtnY = 0f
+    private val meleeBtnR = 60f
+    private var chatBtnX = 0f
+    private var chatBtnY = 0f
+    private val chatBtnR = 60f
+
+    private var lastMeleeMs = 0L
+    private var meleeEndMs = 0L
+    private val arcRect = RectF()
 
     private var lastFrameNs = System.nanoTime()
     private var fps = 0.0
@@ -76,8 +90,15 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         Color.rgb(255, 165, 0), Color.rgb(128, 0, 128), Color.CYAN
     )
 
+    private val teamPalette = intArrayOf(
+        Color.rgb(80, 160, 255), Color.rgb(255, 120, 120),
+        Color.rgb(120, 220, 140), Color.rgb(240, 200, 90)
+    )
+
     private fun playerColor(id: Int): Int =
         if (id == 0) Color.WHITE else palette[Math.floorMod(id, 7)]
+
+    private fun teamColor(teamId: Int): Int = teamPalette[Math.floorMod(teamId, teamPalette.size)]
 
     private fun itemColor(type: String): Int = when (type) {
         "HEALTH_PACK" -> Color.GREEN
@@ -98,6 +119,14 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 val x = e.getX(i); val y = e.getY(i)
                 if (hypot(x - grenadeBtnX, y - grenadeBtnY) <= grenadeBtnR * 1.3f) {
                     throwGrenade()
+                    return true
+                }
+                if (hypot(x - meleeBtnX, y - meleeBtnY) <= meleeBtnR * 1.4f) {
+                    meleeAttack(false)
+                    return true
+                }
+                if (hypot(x - chatBtnX, y - chatBtnY) <= chatBtnR * 1.4f) {
+                    onChatToggle?.invoke()
                     return true
                 }
                 if (x < width / 2 && !leftStick.active) leftStick.start(id, x, y)
@@ -128,6 +157,32 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         val rad = Math.toRadians(myAngle)
         val dx = cos(rad); val dy = -sin(rad)
         c.sendGrenade(myX + dx * 30, myY + dy * 30, dx, dy)
+    }
+
+    /** Melee swing: candidates are pre-filtered locally (range/angle/LOS), the server re-validates. */
+    private fun meleeAttack(heavy: Boolean) {
+        val c = client ?: return
+        val me = c.snapshot.players[myId] ?: return
+        if (me.isDead) return
+        val now = System.currentTimeMillis()
+        val cooldown = if (heavy) settings.heavyMeleeCooldownMs else settings.meleeCooldownMs
+        if (now - lastMeleeMs < cooldown) return
+        lastMeleeMs = now
+        meleeEndMs = now + 220
+        val range = (if (heavy) settings.heavyMeleeRange else settings.meleeRange) + settings.playerRadius
+        val half = (if (heavy) settings.heavyMeleeAngle else settings.meleeAngle) / 2 + 15
+        val targets = ArrayList<Int>()
+        for (p in c.snapshot.players.values) {
+            if (p.id == myId || p.isDead) continue
+            val dx = p.posX - myX
+            val dy = p.posY - myY
+            if (hypot(dx, dy) > range) continue
+            if (Angles.diff(myAngle, Angles.of(dx, dy)) > half) continue
+            if (!Vision.hasLineOfSight(myX, myY, p.posX, p.posY, gameMap.walls, gameMap.doors)) continue
+            targets.add(p.id)
+            if (targets.size >= 20) break
+        }
+        c.sendMelee(myAngle, targets, heavy)
     }
 
     // ================= game loop =================
@@ -231,7 +286,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
 
         // --- report state 20Hz ---
         if (nowMs - lastSentMs >= 50) {
-            c.sendPlayerUpdate(myX, myY, myAngle, shooting, reloading)
+            c.sendPlayerUpdate(myX, myY, myAngle, shooting, reloading, nowMs < meleeEndMs, myAngle)
             lastSentMs = nowMs
         }
     }
@@ -319,7 +374,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         drawItems(canvas, snap)
         drawGrenades(canvas, snap)
         drawBullets(canvas, snap, nowMs)
-        drawPlayers(canvas, snap, dt, nowMs)
+        drawPlayers(canvas, snap, me, dt, nowMs)
         drawExplosions(canvas, snap, nowMs)
         drawHitMarks(canvas, snap, nowMs)
         canvas.restore()
@@ -361,12 +416,14 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         canvas.drawRect(0f, 0f, mapSize, mapSize, linePaint)
     }
 
-    private fun drawPlayers(canvas: Canvas, snap: GameSnapshot, dt: Double, nowMs: Long) {
+    private fun drawPlayers(canvas: Canvas, snap: GameSnapshot, me: PlayerState?, dt: Double, nowMs: Long) {
         val r = settings.playerRadius.toFloat()
         val alive = HashSet<Int>()
         val lerp = min(1.0, dt * 14.0)
+        val myTeam = me?.teamId
         for (p in snap.players.values.sortedBy { it.id }) {
             val isMe = p.id == myId
+            val teammate = myTeam != null && p.teamId == myTeam
             if (!isMe) {
                 alive.add(p.id)
                 val s = remote.getOrPut(p.id) { Smooth(p.posX, p.posY, p.angle) }
@@ -375,14 +432,16 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 var d = Angles.normalize(p.angle - s.angle)
                 if (d > 180.0) d -= 360.0
                 s.angle = Angles.normalize(s.angle + d * lerp)
-                if (!visible(p.posX, p.posY)) continue
+                if (!teammate && !visible(p.posX, p.posY)) continue
             }
             val s = remote[p.id]
             val x = if (isMe && initialized) myX else if (isMe) p.posX else (s?.x ?: p.posX)
             val y = if (isMe && initialized) myY else if (isMe) p.posY else (s?.y ?: p.posY)
             val ang = if (isMe && initialized) myAngle else if (isMe) p.angle else (s?.angle ?: p.angle)
             val col = if (p.isDead) settings.color("dead", Color.GRAY)
-            else if (isMe) Color.WHITE else playerColor(p.id)
+            else if (isMe) Color.WHITE
+            else if (p.teamId != null) teamColor(p.teamId)
+            else playerColor(p.id)
             paint.style = Paint.Style.FILL
             paint.color = col
             canvas.drawCircle(x.toFloat(), y.toFloat(), r, paint)
@@ -399,6 +458,19 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 x.toFloat(), y.toFloat(),
                 (x + dx * (r + 14)).toFloat(), (y + dy * (r + 14)).toFloat(), linePaint
             )
+            if (p.meleeAttacking || (isMe && nowMs < meleeEndMs)) {
+                val swing = if (isMe && nowMs < meleeEndMs) myAngle else p.meleeDirection
+                val half = (settings.meleeAngle / 2).toFloat()
+                arcRect.set(
+                    (x - 72).toFloat(), (y - 72).toFloat(),
+                    (x + 72).toFloat(), (y + 72).toFloat()
+                )
+                linePaint.color = Color.argb(210, 255, 240, 120)
+                linePaint.strokeWidth = 6f
+                canvas.drawArc(arcRect, -swing.toFloat() - half, half * 2, false, linePaint)
+                linePaint.strokeWidth = 4f
+                linePaint.color = Color.WHITE
+            }
             if (p.isDead) {
                 if (p.respawnTime > 0) {
                     val left = p.respawnTime - nowMs / 1000.0
@@ -514,6 +586,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         textPaint.color = Color.WHITE
         canvas.drawText("/ " + settings.magazineSize, 110f, 140f, textPaint)
         canvas.drawText("雷 x" + (me?.grenades ?: 0), 16f, 180f, textPaint)
+        me?.teamId?.let { canvas.drawText("队伍 " + it, 160f, 180f, textPaint) }
 
         if (me?.isDead == true) {
             textPaint.textSize = 56f
@@ -550,6 +623,23 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         textPaint.textSize = 44f
         textPaint.color = if (haveGrenade) Color.WHITE else Color.GRAY
         canvas.drawText("雷", grenadeBtnX - 22f, grenadeBtnY + 16f, textPaint)
+
+        meleeBtnX = w - 110f
+        meleeBtnY = 300f
+        val meleeReady = me?.isDead != true && nowMs - lastMeleeMs >= settings.meleeCooldownMs
+        paint.color = Color.argb(if (meleeReady) 120 else 50, 200, 200, 220)
+        canvas.drawCircle(meleeBtnX, meleeBtnY, meleeBtnR, paint)
+        textPaint.textSize = 40f
+        textPaint.color = if (meleeReady) Color.WHITE else Color.GRAY
+        canvas.drawText("刀", meleeBtnX - 20f, meleeBtnY + 14f, textPaint)
+
+        chatBtnX = w - 110f
+        chatBtnY = 430f
+        paint.color = Color.argb(90, 120, 200, 255)
+        canvas.drawCircle(chatBtnX, chatBtnY, chatBtnR, paint)
+        textPaint.color = Color.WHITE
+        canvas.drawText("聊", chatBtnX - 20f, chatBtnY + 14f, textPaint)
+
         textPaint.textSize = 30f
         textPaint.color = Color.WHITE
     }

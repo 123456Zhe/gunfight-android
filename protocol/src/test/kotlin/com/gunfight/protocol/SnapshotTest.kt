@@ -80,6 +80,15 @@ class SnapshotTest {
         assertEquals(777L, s.bullets[0].recvMs)
     }
 
+    @Test fun teamAndMeleeFieldsParse() {
+        val s = GameSnapshot()
+        s.apply(msg("player_update", """{"2":{"pos":[1.0,2.0],"health":100,"team_id":3,"melee_attacking":true,"melee_direction":45.0}}"""), 1L)
+        val p = s.players[2]!!
+        assertEquals(3, p.teamId)
+        assertTrue(p.meleeAttacking)
+        assertEquals(45.0, p.meleeDirection, 1e-9)
+    }
+
     @Test fun itemPickupBroadcastIsRecorded() {
         val s = GameSnapshot()
         s.apply(msg("item_pickup", """{"player_id":2,"item_id":11,"effect":{}}"""), 900L)

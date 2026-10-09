@@ -5,9 +5,13 @@ import android.content.Context
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.gunfight.protocol.GameClient
@@ -27,6 +31,8 @@ class MainActivity : Activity() {
     private lateinit var ipField: EditText
     private lateinit var portField: EditText
     private lateinit var nameField: EditText
+    private lateinit var chatRow: LinearLayout
+    private lateinit var chatInput: EditText
 
     private val prefs by lazy { getSharedPreferences("gunfight", Context.MODE_PRIVATE) }
 
@@ -102,15 +108,83 @@ class MainActivity : Activity() {
     }
 
     private fun showGame(c: GameClient) {
-        val v = GameView(this, GameSettings.get(this))
+        val settings = GameSettings.get(this)
+        val v = GameView(this, settings)
         v.client = c
+        v.onChatToggle = { toggleChat() }
         view = v
+
+        chatInput = EditText(this).apply {
+            hint = "聊天 / 命令（.help）"
+            setSingleLine()
+            setTextColor(android.graphics.Color.WHITE)
+            setHintTextColor(android.graphics.Color.LTGRAY)
+            setBackgroundColor(android.graphics.Color.argb(190, 0, 0, 0))
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    sendChat()
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        val sendBtn = Button(this).apply {
+            text = "发送"
+            setOnClickListener { sendChat() }
+        }
+        chatRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+            addView(chatInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(
+                sendBtn,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            )
+        }
+        val root = FrameLayout(this)
+        root.addView(
+            v,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        root.addView(
+            chatRow,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP)
+        )
         statusText.text = "已连接"
-        setContentView(v)
+        setContentView(root)
+    }
+
+    private fun toggleChat() {
+        if (chatRow.visibility == View.VISIBLE) {
+            hideChat()
+        } else {
+            chatRow.visibility = View.VISIBLE
+            chatInput.requestFocus()
+            (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
+                ?.showSoftInput(chatInput, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun hideChat() {
+        if (!::chatRow.isInitialized || chatRow.visibility != View.VISIBLE) return
+        chatRow.visibility = View.GONE
+        (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
+            ?.hideSoftInputFromWindow(chatInput.windowToken, 0)
+    }
+
+    private fun sendChat() {
+        val text = chatInput.text.toString().trim()
+        chatInput.setText("")
+        hideChat()
+        if (text.isEmpty()) return
+        client?.sendChat(text.take(GameSettings.get(this).chatMaxLength))
     }
 
     private fun backToForm(message: String) {
         if (isFinishing) return
+        hideChat()
         try {
             client?.close()
         } catch (_: Exception) {

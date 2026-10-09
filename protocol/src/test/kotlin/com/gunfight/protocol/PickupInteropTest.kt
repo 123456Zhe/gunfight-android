@@ -10,9 +10,9 @@ import java.util.concurrent.TimeUnit
 
 /**
  * End-to-end client behaviour against the real Python server, using a fake
- * door/item world built by refserver/helper_server.py (GUNFIGHT_HELPER_WORLD=1):
- * item_update parsing, the item_pickup request round trip, and per-door version
- * seeding for door pushes.
+ * door/item/player world built by refserver/helper_server.py
+ * (GUNFIGHT_HELPER_WORLD=1): item patches and the pickup round trip, per-door
+ * version seeding, melee damage and chat broadcast.
  *
  * Skips unless GUNFIGHT_REFERENCE_NETWORK (or reference/network.py) is available.
  */
@@ -37,21 +37,23 @@ class PickupInteropTest {
         false
     }
 
-    @Test(timeout = 90000) fun pickupAndDoorPush() {
-        val helper = helperScript()
-        val networkPy = referenceNetworkPy()
-        Assume.assumeTrue("python3 not on PATH", pythonAvailable())
-        Assume.assumeTrue("refserver/helper_server.py missing", helper != null)
-        Assume.assumeTrue(
-            "no reference server: copy zd-2d-gunfight into reference/ or set GUNFIGHT_REFERENCE_NETWORK",
-            networkPy != null
-        )
+    private fun waitFor(deadlineMs: Long, what: String, cond: () -> Boolean) {
+        val end = System.currentTimeMillis() + deadlineMs
+        while (System.currentTimeMillis() < end) {
+            if (cond()) return
+            Thread.sleep(50)
+        }
+        fail("timeout waiting for " + what)
+    }
 
-        val proc = ProcessBuilder("python3", helper!!.absolutePath)
+    /** Starts the world helper and returns (process, log, port). */
+    private fun launchWorldHelper(): Triple<Process, CopyOnWriteArrayList<String>, Int> {
+        val helper = helperScript()!!
+        val proc = ProcessBuilder("python3", helper.absolutePath)
             .directory(helper.parentFile)
             .redirectErrorStream(true)
             .apply {
-                environment()["GUNFIGHT_REFERENCE_NETWORK"] = networkPy!!.absolutePath
+                environment()["GUNFIGHT_REFERENCE_NETWORK"] = referenceNetworkPy()!!.absolutePath
                 environment()["GUNFIGHT_HELPER_WORLD"] = "1"
             }
             .start()
@@ -64,35 +66,38 @@ class PickupInteropTest {
         }
         reader.isDaemon = true
         reader.start()
-        try {
-            var port = -1
-            val readyBy = System.currentTimeMillis() + 20000
-            while (System.currentTimeMillis() < readyBy && port <= 0) {
-                for (line in log) {
-                    Regex("READY port=(\\d+)").find(line)?.let {
-                        port = it.groupValues[1].toInt()
-                    }
-                }
-                if (port <= 0) Thread.sleep(50)
+        var port = -1
+        val end = System.currentTimeMillis() + 20000
+        while (System.currentTimeMillis() < end && port <= 0) {
+            for (line in log) {
+                Regex("READY port=(\\d+)").find(line)?.let { port = it.groupValues[1].toInt() }
             }
-            assertTrue("helper never reported a port: " + log.joinToString(" | "), port > 0)
+            if (port <= 0) Thread.sleep(50)
+        }
+        assertTrue("helper never reported a port: " + log.joinToString(" | "), port > 0)
+        return Triple(proc, log, port)
+    }
 
+    @Test(timeout = 90000) fun pickupAndDoorPush() {
+        Assume.assumeTrue("python3 not on PATH", pythonAvailable())
+        Assume.assumeTrue("refserver/helper_server.py missing", helperScript() != null)
+        Assume.assumeTrue(
+            "no reference server: copy zd-2d-gunfight into reference/ or set GUNFIGHT_REFERENCE_NETWORK",
+            referenceNetworkPy() != null
+        )
+        val (proc, log, port) = launchWorldHelper()
+        try {
             val client = GameClient("127.0.0.1", port, "KotlinPickup")
             try {
                 assertTrue("handshake with reference server failed", client.connect())
                 val snap = client.snapshot
 
-                var t = System.currentTimeMillis() + 8000
-                while (System.currentTimeMillis() < t && snap.items.isEmpty()) {
-                    client.sendPlayerUpdate(snap.players[client.handshake.clientId]?.posX ?: 0.0,
-                        snap.players[client.handshake.clientId]?.posY ?: 0.0, 0.0, false, false)
-                    Thread.sleep(50)
-                }
-                assertTrue("no item_update broadcast received", snap.items.isNotEmpty())
+                waitFor(8000, "item_update broadcast") { snap.items.isNotEmpty() }
                 assertTrue("item must start active", snap.items[1]!!.active)
 
-                t = System.currentTimeMillis() + 5000
-                while (System.currentTimeMillis() < t && snap.items[1]?.active != false) {
+                // pickup request -> server flips it inactive and broadcasts item_pickup
+                val end = System.currentTimeMillis() + 5000
+                while (System.currentTimeMillis() < end && snap.items[1]?.active != false) {
                     client.sendItemPickup(1)
                     Thread.sleep(200)
                 }
@@ -100,24 +105,60 @@ class PickupInteropTest {
                 assertEquals("item_pickup broadcast missing", 1, snap.lastPickupItemId)
 
                 client.sendDoorUpdate(0, 1.0, 5)
-                t = System.currentTimeMillis() + 3000
-                while (System.currentTimeMillis() < t && snap.doors["0"] == null) Thread.sleep(50)
+                waitFor(3000, "near door echo") { snap.doors["0"] != null }
                 assertEquals(
                     "near door push must be echoed with serverVersion+1",
                     6, (snap.doors["0"]?.get("version") as? Number)?.toInt()
                 )
 
                 client.sendDoorUpdate(0, -1.0, 6)
-                t = System.currentTimeMillis() + 3000
-                while (System.currentTimeMillis() < t) {
-                    if (((snap.doors["0"]?.get("version") as? Number)?.toInt() ?: 0) >= 7) break
-                    Thread.sleep(50)
+                waitFor(3000, "second door echo") {
+                    ((snap.doors["0"]?.get("version") as? Number)?.toInt() ?: 0) >= 7
                 }
                 assertEquals(7, (snap.doors["0"]?.get("version") as? Number)?.toInt())
 
                 client.sendDoorUpdate(1, 1.0, 0)
                 Thread.sleep(800)
                 assertNull("a door we are not standing next to must be rejected", snap.doors["1"])
+            } finally {
+                client.close()
+            }
+        } finally {
+            proc.destroy()
+            proc.waitFor(3, TimeUnit.SECONDS)
+            proc.destroyForcibly()
+        }
+    }
+
+    @Test(timeout = 90000) fun meleeAndChatRoundTrip() {
+        Assume.assumeTrue("python3 not on PATH", pythonAvailable())
+        Assume.assumeTrue("refserver/helper_server.py missing", helperScript() != null)
+        Assume.assumeTrue(
+            "no reference server: copy zd-2d-gunfight into reference/ or set GUNFIGHT_REFERENCE_NETWORK",
+            referenceNetworkPy() != null
+        )
+        val (proc, log, port) = launchWorldHelper()
+        try {
+            val client = GameClient("127.0.0.1", port, "KotlinMelee")
+            try {
+                assertTrue("handshake with reference server failed", client.connect())
+                val snap = client.snapshot
+                val me = client.handshake.clientId
+
+                // the fake world puts a dummy player 30px to the +x of our spawn
+                waitFor(8000, "dummy player in snapshot") { snap.players[3] != null }
+                val mePos = snap.players[me]!!
+                val dummy = snap.players[3]!!
+                assertEquals("dummy must start at full health", 100, dummy.health)
+                assertTrue("dummy must be within melee reach", dummy.posX - mePos.posX in 1.0..80.0)
+
+                client.sendMelee(0.0, listOf(3), isHeavy = false)
+                waitFor(4000, "melee damage on the dummy") { (snap.players[3]?.health ?: 100) < 100 }
+                assertEquals("melee damage comes from settings (40)", 60, snap.players[3]!!.health)
+                waitFor(2000, "hit combat feedback") { snap.lastHit?.targetId == 3 }
+
+                client.sendChat("hello from kotlin")
+                waitFor(4000, "chat broadcast") { snap.chat.any { it.text == "hello from kotlin" } }
             } finally {
                 client.close()
             }

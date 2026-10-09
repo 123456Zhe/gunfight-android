@@ -46,7 +46,10 @@ data class PlayerState(
     val grenades: Int,
     val isReloading: Boolean = false,
     val shooting: Boolean = false,
-    val respawnTime: Double = 0.0
+    val respawnTime: Double = 0.0,
+    val teamId: Int? = null,
+    val meleeAttacking: Boolean = false,
+    val meleeDirection: Double = 0.0
 ) {
     companion object {
         fun from(id: Int, m: Map<String, Any?>): PlayerState {
@@ -60,7 +63,10 @@ data class PlayerState(
                 weaponType = m.str("weapon_type", "gun"),
                 grenades = m.int("grenades"),
                 isReloading = m.bool("is_reloading"), shooting = m.bool("shooting"),
-                respawnTime = m.dbl("respawn_time")
+                respawnTime = m.dbl("respawn_time"),
+                teamId = (m["team_id"] as? Number)?.toInt(),
+                meleeAttacking = m.bool("melee_attacking"),
+                meleeDirection = m.dbl("melee_direction")
             )
         }
     }

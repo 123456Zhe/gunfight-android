@@ -148,11 +148,38 @@ class GameClient(
     private var fireSeq = 0
     private var grenadeSeq = 0
 
-    fun sendPlayerUpdate(x: Double, y: Double, angleDeg: Double, shooting: Boolean, isReloading: Boolean) {
+    fun sendPlayerUpdate(
+        x: Double, y: Double, angleDeg: Double, shooting: Boolean, isReloading: Boolean,
+        meleeAttacking: Boolean = false, meleeDirection: Double = 0.0
+    ) {
         val pid = handshake.clientId
         if (pid < 0) return
         try {
-            sendRaw(buildPlayerUpdate(pid, x, y, angleDeg, shooting, isReloading, playerName))
+            sendRaw(
+                buildPlayerUpdate(
+                    pid, x, y, angleDeg, shooting, isReloading, playerName,
+                    meleeAttacking, meleeDirection,
+                    if (meleeAttacking) "melee" else "gun"
+                )
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    fun sendMelee(directionDeg: Double, targets: List<Int>, isHeavy: Boolean) {
+        val pid = handshake.clientId
+        if (pid < 0) return
+        try {
+            sendRaw(buildMeleeAttack(pid, directionDeg, targets, isHeavy))
+        } catch (_: Exception) {
+        }
+    }
+
+    fun sendChat(message: String, isTeamChat: Boolean = false) {
+        val pid = handshake.clientId
+        if (pid < 0 || message.isEmpty()) return
+        try {
+            sendRaw(buildChatMessage(pid, playerName, message, isTeamChat))
         } catch (_: Exception) {
         }
     }

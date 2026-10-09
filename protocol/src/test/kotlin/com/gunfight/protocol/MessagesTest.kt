@@ -62,6 +62,38 @@ class MessagesTest {
         assertTrue(parsePacket("") is Packet.Invalid)
     }
 
+    @Test fun meleeAndChatMessageShape() {
+        val m = Json.parse(buildMeleeAttack(2, 90.0, listOf(3, 4), false)) as Map<String, Any?>
+        assertEquals("melee_attack", m["type"])
+        @Suppress("UNCHECKED_CAST")
+        val d = m["data"] as Map<String, Any?>
+        assertEquals(2.0, d["attacker_id"])
+        assertEquals(90.0, d["direction"])
+        assertEquals(listOf(3.0, 4.0), d["targets"])
+        assertEquals(false, d["is_heavy"])
+
+        val c = Json.parse(buildChatMessage(2, "Bob", "hi")) as Map<String, Any?>
+        assertEquals("chat_message", c["type"])
+        @Suppress("UNCHECKED_CAST")
+        val cd = c["data"] as Map<String, Any?>
+        assertEquals("hi", cd["message"])
+        assertEquals("Bob", cd["player_name"])
+        assertEquals(false, cd["is_team_chat"])
+    }
+
+    @Test fun playerUpdateCarriesMeleeState() {
+        val u = Json.parse(
+            buildPlayerUpdate(2, 1.0, 2.0, 90.0, false, false, "Bob", true, 90.0, weaponType = "melee")
+        ) as Map<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val data = u["data"] as Map<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val me = data["2"] as Map<String, Any?>
+        assertEquals(true, me["melee_attacking"])
+        assertEquals(90.0, me["melee_direction"])
+        assertEquals("melee", me["weapon_type"])
+    }
+
     @Test fun connectResponseTopLevelFields() {
         // reference network.py sends client_id/server_name TOP-LEVEL (not under data)
         val now = longArrayOf(0L)

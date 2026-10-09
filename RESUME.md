@@ -36,6 +36,18 @@
 | P3 | 无 LICENSE | 补 GPL-3.0（与主仓一致） |
 | P3 | RESUME 泄露云服地址/SSH | 已移除，运维细节不进公开仓库 |
 
+## 追加一批（近战 / 聊天 / 队伍）
+
+| 项 | 处理 |
+|---|---|
+| 近战 | 新增 buildMeleeAttack + GameClient.sendMelee + GameView "刀" 按钮：本地按 settings 的 melee.range/angle + 视线预筛 targets，服务端再校验冷却/距离/角度/视线；player_update 现在上报 melee_attacking/melee_direction/weapon_type=melee，挥砍画弧线 |
+| 聊天/命令 | 新增 buildChatMessage + GameClient.sendChat；MainActivity 用 FrameLayout 叠一个输入框，点 HUD "聊" 唤出，.kill/.addai/.team/.help 等命令走同一通道 |
+| 队伍 | PlayerState.teamId；队友无视 FOV 裁剪、按队伍配色，HUD 显示 "队伍 N" |
+
+互操作测试同步扩展：world helper 里放一个假 AI 玩家（距出生点 30px），Kotlin 客户端发 melee_attack 后
+断言服务端把它打到 60 血（settings 的 40 伤害）并回 hit 事件；chat_message 能收到自己的广播。
+现在共 35 项测试全过。
+
 ## 仍需注意
 
 - `gradle.properties` 里的旧代理密码已随 git 历史公开，**应尽快作废/更换**；

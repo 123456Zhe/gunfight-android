@@ -8,8 +8,11 @@
   - `build.sh` 全链路跑通，产出 `dist/GunfightSpectate.apk`（~720KB，versionCode 2 / versionName 0.2-phase2）；
   - `./gradlew` 的 wrapper 已补上（jar + properties + gradlew），但本机无法下载 Gradle 8.7 发行版，
     该路径未在本机实测，首次跑要留意。
-- 已推送到 GitHub `main`（提交 `f1c4f7b`）。本机推送要经本地代理：
-  `git config http.proxy http://127.0.0.1:7890`（只写在 .git/config，不入库）。
+- 已推送到 GitHub `main`（`f1c4f7b` / `c98a551` / `655f5f6` 三个提交，远端 SHA 与本地完全一致）。
+  本机 git-over-https 不稳：github.com 直连被 TLS 打断，本地代理时通时断。代理可用时
+  `git -c http.proxy=http://127.0.0.1:7890 push origin main`；代理挂了但 api.github.com 通时，
+  用 `~/toolchain/gh-api-push.py <sha> main`（走 REST API 重建同样的 tree/commit，因此远端 SHA
+  与本地相同，然后快进 ref）。
 - CI workflow（`.github/workflows/ci.yml`）写在本地但**尚未提交**：当前 gh token 缺 `workflow` scope，
   GitHub 拒绝推送 workflow 文件。给它加上 `workflow` scope（或换一个有 scope 的凭据）后即可一起提交。
 - Gitea（68.64.177.154:3002）本次不可达（连接被拒绝），未做镜像推送。

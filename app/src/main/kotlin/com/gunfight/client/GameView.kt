@@ -72,6 +72,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
     private var meleeHoldPointer = -1
     private var meleeHoldStartMs = 0L
     private var meleeHeavyFired = false
+    private val meleeHoldThresholdMs = 350L
     private val arcRect = RectF()
 
     private var lastFrameNs = System.nanoTime()
@@ -126,8 +127,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                     return true
                 }
                 if (hypot(x - meleeBtnX, y - meleeBtnY) <= meleeBtnR * 1.4f) {
-                    // tap swings light; holding past the heavy cooldown upgrades to a heavy swing
-                    meleeAttack(false)
+                    // tap fires light on release, holding past the threshold fires heavy only
                     meleeHoldPointer = id
                     meleeHoldStartMs = System.currentTimeMillis()
                     meleeHeavyFired = false
@@ -153,7 +153,13 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 val id = e.getPointerId(e.actionIndex)
                 if (id == leftStick.pointerId) leftStick.release()
                 if (id == rightStick.pointerId) rightStick.release()
-                if (id == meleeHoldPointer) meleeHoldPointer = -1
+                if (id == meleeHoldPointer) {
+                    // released without a heavy: that was a tap (or heavy was still on cooldown)
+                    if (e.actionMasked != MotionEvent.ACTION_CANCEL && !meleeHeavyFired) {
+                        meleeAttack(false)
+                    }
+                    meleeHoldPointer = -1
+                }
             }
         }
         return true
@@ -196,10 +202,10 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         c.sendMelee(myAngle, targets, heavy)
     }
 
-    /** Holding the melee button past the heavy cooldown upgrades the swing to a heavy one. */
+    /** A hold past the threshold becomes a heavy swing; a tap stays light (fired on release). */
     private fun updateMeleeHold(nowMs: Long) {
         if (meleeHoldPointer < 0 || meleeHeavyFired) return
-        if (nowMs - meleeHoldStartMs < 400) return
+        if (nowMs - meleeHoldStartMs < meleeHoldThresholdMs) return
         if (nowMs - lastMeleeMs < (settings.heavyMeleeCooldownMs * 0.95).toLong()) return
         meleeHeavyFired = true
         meleeAttack(true)
@@ -652,15 +658,18 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         meleeBtnX = w - 110f
         meleeBtnY = 300f
         val heavyGateMs = (settings.heavyMeleeCooldownMs * 0.95).toLong()
-        val heavyReady = nowMs - lastMeleeMs >= heavyGateMs
+        val heavyGateReady = nowMs - lastMeleeMs >= heavyGateMs
         val meleeReady = me?.isDead != true &&
             nowMs - lastMeleeMs >= (settings.meleeCooldownMs * 0.95).toLong()
+        val holding = meleeHoldPointer >= 0 && !meleeHeavyFired
+        val holdElapsed = if (holding) nowMs - meleeHoldStartMs else 0L
+        val holdArmed = holding && holdElapsed >= meleeHoldThresholdMs && heavyGateReady
         paint.color = Color.argb(if (meleeReady) 120 else 50, 200, 200, 220)
         canvas.drawCircle(meleeBtnX, meleeBtnY, meleeBtnR, paint)
-        if (meleeHoldPointer >= 0) {
-            val frac = ((nowMs - meleeHoldStartMs).toFloat() / heavyGateMs.toFloat()).coerceIn(0f, 1f)
+        if (holding) {
+            val frac = (holdElapsed.toFloat() / meleeHoldThresholdMs.toFloat()).coerceIn(0f, 1f)
             linePaint.strokeWidth = 8f
-            linePaint.color = if (heavyReady) Color.rgb(255, 220, 80) else Color.argb(200, 200, 200, 200)
+            linePaint.color = if (holdArmed) Color.rgb(255, 220, 80) else Color.argb(200, 200, 200, 200)
             arcRect.set(
                 meleeBtnX - meleeBtnR - 10f, meleeBtnY - meleeBtnR - 10f,
                 meleeBtnX + meleeBtnR + 10f, meleeBtnY + meleeBtnR + 10f
@@ -671,10 +680,10 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         textPaint.textSize = 40f
         textPaint.color = if (meleeReady) Color.WHITE else Color.GRAY
         canvas.drawText("刀", meleeBtnX - 20f, meleeBtnY + 14f, textPaint)
-        if (heavyReady && meleeHoldPointer >= 0) {
+        if (holding && holdElapsed >= meleeHoldThresholdMs) {
             textPaint.textSize = 26f
-            textPaint.color = Color.rgb(255, 220, 80)
-            canvas.drawText("重击", meleeBtnX - 84f, meleeBtnY + 8f, textPaint)
+            textPaint.color = if (heavyGateReady) Color.rgb(255, 220, 80) else Color.GRAY
+            canvas.drawText(if (heavyGateReady) "重击" else "冷却", meleeBtnX - 84f, meleeBtnY + 8f, textPaint)
             textPaint.textSize = 40f
             textPaint.color = Color.WHITE
         }

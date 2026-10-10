@@ -68,6 +68,10 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
 
     private var lastMeleeMs = 0L
     private var meleeEndMs = 0L
+    private var lastMeleeHeavy = false
+    private var meleeHoldPointer = -1
+    private var meleeHoldStartMs = 0L
+    private var meleeHeavyFired = false
     private val arcRect = RectF()
 
     private var lastFrameNs = System.nanoTime()
@@ -122,7 +126,11 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                     return true
                 }
                 if (hypot(x - meleeBtnX, y - meleeBtnY) <= meleeBtnR * 1.4f) {
+                    // tap swings light; holding past the heavy cooldown upgrades to a heavy swing
                     meleeAttack(false)
+                    meleeHoldPointer = id
+                    meleeHoldStartMs = System.currentTimeMillis()
+                    meleeHeavyFired = false
                     return true
                 }
                 if (hypot(x - chatBtnX, y - chatBtnY) <= chatBtnR * 1.4f) {
@@ -145,6 +153,7 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 val id = e.getPointerId(e.actionIndex)
                 if (id == leftStick.pointerId) leftStick.release()
                 if (id == rightStick.pointerId) rightStick.release()
+                if (id == meleeHoldPointer) meleeHoldPointer = -1
             }
         }
         return true
@@ -166,7 +175,8 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
         if (me.isDead) return
         val now = System.currentTimeMillis()
         val cooldown = if (heavy) settings.heavyMeleeCooldownMs else settings.meleeCooldownMs
-        if (now - lastMeleeMs < cooldown) return
+        // the server grants 10% tolerance on its cooldown check
+        if (now - lastMeleeMs < (cooldown * 0.95).toLong()) return
         lastMeleeMs = now
         meleeEndMs = now + 220
         val range = (if (heavy) settings.heavyMeleeRange else settings.meleeRange) + settings.playerRadius
@@ -182,7 +192,17 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
             targets.add(p.id)
             if (targets.size >= 20) break
         }
+        lastMeleeHeavy = heavy
         c.sendMelee(myAngle, targets, heavy)
+    }
+
+    /** Holding the melee button past the heavy cooldown upgrades the swing to a heavy one. */
+    private fun updateMeleeHold(nowMs: Long) {
+        if (meleeHoldPointer < 0 || meleeHeavyFired) return
+        if (nowMs - meleeHoldStartMs < 400) return
+        if (nowMs - lastMeleeMs < (settings.heavyMeleeCooldownMs * 0.95).toLong()) return
+        meleeHeavyFired = true
+        meleeAttack(true)
     }
 
     // ================= game loop =================
@@ -204,6 +224,8 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
             c.snapshot.localPlayerId = myId
         }
         val snap = c.snapshot
+
+        updateMeleeHold(nowMs)
 
         if (nowMs - lastPruneMs >= 500) {
             lastPruneMs = nowMs
@@ -458,12 +480,15 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
                 x.toFloat(), y.toFloat(),
                 (x + dx * (r + 14)).toFloat(), (y + dy * (r + 14)).toFloat(), linePaint
             )
-            if (p.meleeAttacking || (isMe && nowMs < meleeEndMs)) {
-                val swing = if (isMe && nowMs < meleeEndMs) myAngle else p.meleeDirection
-                val half = (settings.meleeAngle / 2).toFloat()
+            val mine = isMe && nowMs < meleeEndMs
+            if (p.meleeAttacking || mine) {
+                val swing = if (mine) myAngle else p.meleeDirection
+                val heavySwing = mine && lastMeleeHeavy
+                val half = ((if (heavySwing) settings.heavyMeleeAngle else settings.meleeAngle) / 2).toFloat()
+                val radius = if (heavySwing) 62f else 72f
                 arcRect.set(
-                    (x - 72).toFloat(), (y - 72).toFloat(),
-                    (x + 72).toFloat(), (y + 72).toFloat()
+                    (x - radius).toFloat(), (y - radius).toFloat(),
+                    (x + radius).toFloat(), (y + radius).toFloat()
                 )
                 linePaint.color = Color.argb(210, 255, 240, 120)
                 linePaint.strokeWidth = 6f
@@ -626,12 +651,33 @@ class GameView(ctx: Context, val settings: GameSettings) : View(ctx) {
 
         meleeBtnX = w - 110f
         meleeBtnY = 300f
-        val meleeReady = me?.isDead != true && nowMs - lastMeleeMs >= settings.meleeCooldownMs
+        val heavyGateMs = (settings.heavyMeleeCooldownMs * 0.95).toLong()
+        val heavyReady = nowMs - lastMeleeMs >= heavyGateMs
+        val meleeReady = me?.isDead != true &&
+            nowMs - lastMeleeMs >= (settings.meleeCooldownMs * 0.95).toLong()
         paint.color = Color.argb(if (meleeReady) 120 else 50, 200, 200, 220)
         canvas.drawCircle(meleeBtnX, meleeBtnY, meleeBtnR, paint)
+        if (meleeHoldPointer >= 0) {
+            val frac = ((nowMs - meleeHoldStartMs).toFloat() / heavyGateMs.toFloat()).coerceIn(0f, 1f)
+            linePaint.strokeWidth = 8f
+            linePaint.color = if (heavyReady) Color.rgb(255, 220, 80) else Color.argb(200, 200, 200, 200)
+            arcRect.set(
+                meleeBtnX - meleeBtnR - 10f, meleeBtnY - meleeBtnR - 10f,
+                meleeBtnX + meleeBtnR + 10f, meleeBtnY + meleeBtnR + 10f
+            )
+            canvas.drawArc(arcRect, -90f, 360f * frac, false, linePaint)
+            linePaint.strokeWidth = 4f
+        }
         textPaint.textSize = 40f
         textPaint.color = if (meleeReady) Color.WHITE else Color.GRAY
         canvas.drawText("刀", meleeBtnX - 20f, meleeBtnY + 14f, textPaint)
+        if (heavyReady && meleeHoldPointer >= 0) {
+            textPaint.textSize = 26f
+            textPaint.color = Color.rgb(255, 220, 80)
+            canvas.drawText("重击", meleeBtnX - 84f, meleeBtnY + 8f, textPaint)
+            textPaint.textSize = 40f
+            textPaint.color = Color.WHITE
+        }
 
         chatBtnX = w - 110f
         chatBtnY = 430f

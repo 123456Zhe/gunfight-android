@@ -43,7 +43,7 @@
 
 | 项 | 处理 |
 |---|---|
-| 近战 | 新增 buildMeleeAttack + GameClient.sendMelee + GameView "刀" 按钮：本地按 settings 的 melee.range/angle + 视线预筛 targets，服务端再校验冷却/距离/角度/视线；player_update 现在上报 melee_attacking/melee_direction/weapon_type=melee，挥砍画弧线 |
+| 近战 | 点按轻击、长按（蓄力环读满，即服务端重击冷却 1.2s x 0.95）后自动补一记重击；新增 buildMeleeAttack + GameClient.sendMelee + GameView "刀" 按钮：本地按 settings 的 melee.range/angle + 视线预筛 targets，服务端再校验冷却/距离/角度/视线；player_update 现在上报 melee_attacking/melee_direction/weapon_type=melee，挥砍画弧线 |
 | 聊天/命令 | 新增 buildChatMessage + GameClient.sendChat；MainActivity 用 FrameLayout 叠一个输入框，点 HUD "聊" 唤出，.kill/.addai/.team/.help 等命令走同一通道 |
 | 队伍 | PlayerState.teamId；队友无视 FOV 裁剪、按队伍配色，HUD 显示 "队伍 N" |
 

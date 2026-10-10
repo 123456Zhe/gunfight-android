@@ -72,6 +72,11 @@ class MessagesTest {
         assertEquals(listOf(3.0, 4.0), d["targets"])
         assertEquals(false, d["is_heavy"])
 
+        val heavy = Json.parse(buildMeleeAttack(2, 0.0, listOf(3), true)) as Map<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val hd = heavy["data"] as Map<String, Any?>
+        assertEquals(true, hd["is_heavy"])
+
         val c = Json.parse(buildChatMessage(2, "Bob", "hi")) as Map<String, Any?>
         assertEquals("chat_message", c["type"])
         @Suppress("UNCHECKED_CAST")

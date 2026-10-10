@@ -157,6 +157,12 @@ class PickupInteropTest {
                 assertEquals("melee damage comes from settings (40)", 60, snap.players[3]!!.health)
                 waitFor(2000, "hit combat feedback") { snap.lastHit?.targetId == 3 }
 
+                // heavy swing: server damage is 60, so the dummy drops from 60 to 0
+                Thread.sleep(1300)
+                client.sendMelee(0.0, listOf(3), isHeavy = true)
+                waitFor(2500, "heavy melee kill on the dummy") { snap.players[3]?.isDead == true }
+                assertEquals("heavy melee damage comes from settings (60)", 0, snap.players[3]!!.health)
+
                 client.sendChat("hello from kotlin")
                 waitFor(4000, "chat broadcast") { snap.chat.any { it.text == "hello from kotlin" } }
             } finally {
